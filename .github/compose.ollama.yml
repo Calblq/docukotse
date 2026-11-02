@@ -1,0 +1,24 @@
+# CI-only override: runs Ollama inside the stack (CPU) instead of on the host, with a small
+# LLM so the full answering path can be exercised on a GitHub runner without a GPU.
+#   docker compose -f docker-compose.yml -f .github/compose.ollama.yml up -d
+services:
+  ollama:
+    image: ollama/ollama:0.40.4
+    volumes:
+      - ollama:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      retries: 30
+
+  api:
+    environment:
+      OLLAMA_URL: http://ollama:11434
+      LLM_MODEL: qwen2.5:3b
+      LLM_TIMEOUT_S: "600"  # CPU-only runner
+    depends_on:
+      ollama:
+        condition: service_healthy
+
+volumes:
+  ollama:

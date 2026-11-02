@@ -1,0 +1,12 @@
+# Gives the API container the NVIDIA GPU, so the reranker takes about 1 s per question
+# instead of 15-30 s on the CPU:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+services:
+  api:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

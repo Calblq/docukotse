@@ -1,0 +1,127 @@
+name: Compose smoke test
+
+# Builds the images and runs the whole stack with `docker compose up`, then checks it from
+# outside the containers. Ollama isn't available on CI runners, so questions and ingestion
+# aren't exercised here; everything else (DB + migrations, object storage, auth, upload, signed
+# downloads, frontend) is.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  compose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      TORCH_INDEX: https://download.pytorch.org/whl/cpu  # no GPU on CI runners
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build and start the stack
+        run: |
+          cp .env.example .env
+          docker compose up -d --build --wait db storage
+          docker compose up -d --build api frontend
+
+      - name: Wait for the API and frontend
+        run: |
+          for i in $(seq 1 60); do
+            curl -sf localhost:8000/health && break
+            sleep 2
+          done
+          curl -sf localhost:8000/health | grep '"database":true'
+          for i in $(seq 1 30); do
+            curl -sf -o /dev/null localhost:3000/login && break
+            sleep 2
+          done
+          curl -sf localhost:3000/login | grep -q "DocuKotse"
+
+      - name: Seed users and vehicles
+        run: docker compose exec -T api python scripts/seed.py --no-docs
+
+      - name: Log in, list vehicles, upload a PDF, download it again
+        run: |
+          set -euo pipefail
+          TOKEN=$(curl -sf -X POST localhost:8000/auth/login \
+            -d "username=staff@cardocs.local&password=staff123" | jq -r .access_token)
+          AUTH="Authorization: Bearer $TOKEN"
+          test "$(curl -sf localhost:8000/vehicles -H "$AUTH" | jq length)" = 7
+
+          DOC=$(curl -sf -X POST localhost:8000/documents -H "$AUTH" \
+            -F file=@samples/nbc1234_orcr.pdf -F doc_type=or_cr -F vehicle_id=1 | jq -r .id)
+          # Ingestion runs in the background and fails without Ollama; it must say why.
+          for i in $(seq 1 30); do
+            STATUS=$(curl -sf localhost:8000/documents/$DOC -H "$AUTH" | jq -r .status)
+            [ "$STATUS" = failed ] || [ "$STATUS" = ready ] && break
+            sleep 2
+          done
+          curl -sf localhost:8000/documents/$DOC -H "$AUTH" | jq '{status, error}'
+          test "$STATUS" = failed
+
+          URL=$(curl -sf localhost:8000/documents/$DOC/file -H "$AUTH" | jq -r .url)
+          curl -sf "$URL" | head -c 5 | grep -q "%PDF"
+          echo "Signed download OK"
+
+      - name: Logs on failure
+        if: failure()
+        run: docker compose logs --tail 200
+
+  answering:
+    # Full pipeline inside Docker: ingestion (bge-m3), reranking, abstaining and answering.
+    # Uses qwen2.5:3b on CPU, so this checks that the stack works end to end, not answer
+    # quality (see eval/ for that, run with qwen2.5:7b on a GPU).
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      COMPOSE: docker compose -f docker-compose.yml -f .github/compose.ollama.yml
+      TORCH_INDEX: https://download.pytorch.org/whl/cpu
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Free disk space
+        # Images + Ollama models + the 2 GB reranker don't fit in the runner's default space.
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h / | tail -1
+
+      - name: Start the stack with Ollama
+        run: |
+          cp .env.example .env
+          $COMPOSE up -d --build --wait db storage ollama
+          $COMPOSE exec -T ollama ollama pull bge-m3
+          $COMPOSE exec -T ollama ollama pull qwen2.5:3b
+          $COMPOSE up -d --build api
+          for i in $(seq 1 60); do curl -sf localhost:8000/health && break; sleep 2; done
+
+      - name: Seed and ingest all sample documents
+        run: |
+          $COMPOSE exec -T api python scripts/seed.py | tee seed.log
+          test "$(grep -c ': ready' seed.log)" = 19  # 16 PDFs + 2 photos + 1 scan (OCR)
+
+      - name: Ask questions through the API
+        run: |
+          set -euo pipefail
+          TOKEN=$(curl -sf -X POST localhost:8000/auth/login \
+            -d "username=staff@cardocs.local&password=staff123" | jq -r .access_token)
+          ask() {
+            curl -sf --max-time 600 -X POST localhost:8000/chat \
+              -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+              -d "{\"question\": \"$1\"}"
+          }
+
+          # Answerable: retrieval must find the deed and the model must answer with citations.
+          A=$(ask "Who bought the Toyota Vios with plate NBC 1234?")
+          echo "$A" | jq '{answer, verified, abstained, abstain_reason, citations: [.citations[] | "\(.filename) p\(.page)"]}'
+          test "$(echo "$A" | jq .abstained)" = false
+          echo "$A" | jq -e '[.citations[].filename] | index("nbc1234_deed_of_sale.pdf") != null'
+
+          # Unanswerable (the Mirage has no insurance policy): must abstain, not borrow the Vios's.
+          U=$(ask "What is the insurance policy number of the Mitsubishi Mirage?")
+          echo "$U" | jq '{answer, abstained, abstain_reason}'
+          test "$(echo "$U" | jq .abstained)" = true
+
+      - name: Logs on failure
+        if: failure()
+        run: $COMPOSE logs --tail 200 api ollama

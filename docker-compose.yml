@@ -1,0 +1,82 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-cardocs}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cardocs}
+      POSTGRES_DB: ${POSTGRES_DB:-cardocs}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cardocs}"]
+      interval: 5s
+      retries: 20
+
+  storage:
+    # S3-compatible object storage. MinIO withdrew its public Docker images in 2025;
+    # RustFS is an Apache-2.0, MinIO-compatible replacement (same ports, same S3 API).
+    image: rustfs/rustfs:1.0.1
+    environment:
+      RUSTFS_VOLUMES: /data
+      RUSTFS_ADDRESS: 0.0.0.0:9000
+      RUSTFS_CONSOLE_ADDRESS: 0.0.0.0:9001
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_ACCESS_KEY: ${S3_ACCESS_KEY:-cardocs}
+      RUSTFS_SECRET_KEY: ${S3_SECRET_KEY:-cardocs-secret}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - objects:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/health"]
+      interval: 5s
+      retries: 30
+
+  api:
+    build:
+      context: ./backend
+      args:
+        TORCH_INDEX: ${TORCH_INDEX:-https://download.pytorch.org/whl/cu128}
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-cardocs}:${POSTGRES_PASSWORD:-cardocs}@db:5432/${POSTGRES_DB:-cardocs}
+      S3_ENDPOINT: http://storage:9000
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-cardocs}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-cardocs-secret}
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8000:8000"
+    volumes:
+      # Inside /app so `python scripts/seed.py` works from any shell (Git Bash rewrites
+      # absolute paths like /scripts/seed.py into Windows paths).
+      - ./scripts:/app/scripts:ro
+      - ./samples:/app/samples:ro
+      - hf-models:/models  # reranker weights (~2 GB), downloaded on first question
+    depends_on:
+      db:
+        condition: service_healthy
+      storage:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+  objects:
+  hf-models:

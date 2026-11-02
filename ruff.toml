@@ -1,0 +1,13 @@
+# Shared by backend/, scripts/ and eval/.
+line-length = 100
+target-version = "py311"
+
+[lint]
+select = ["E", "F", "I", "B", "UP"]
+# FastAPI's Depends()/Form() defaults are idiomatic
+ignore = ["B008"]
+
+[lint.isort]
+# the local backend/alembic/ migrations folder would otherwise make it look first-party
+known-third-party = ["alembic"]
+known-first-party = ["app"]

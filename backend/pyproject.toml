@@ -1,0 +1,9 @@
+[project]
+name = "docukotse"
+version = "0.1.0"
+description = "RAG over car buy-and-sell documents with citations, abstention and verification"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

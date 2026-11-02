@@ -1,0 +1,63 @@
+@import "tailwindcss";
+
+/* Palette drawn from dealership paperwork: registry-form blue, ballpoint ink,
+   and rubber-stamp green/amber for answer status. */
+@theme {
+  --color-paper: #f6f7f4;
+  --color-sheet: #ffffff;
+  --color-ink: #1c2939;
+  --color-ink-soft: #4a5768;
+  --color-rule: #d6dbe2;
+  --color-form: #2b5a8a;
+  --color-form-dark: #1f4468;
+  --color-form-tint: #e8eef5;
+  --color-stamp-ok: #2e7d4f;
+  --color-stamp-warn: #a86a12;
+  --color-stamp-none: #5b6675;
+  --color-danger: #b42318;
+
+  --font-sans: var(--font-public-sans), system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, monospace;
+}
+
+body {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-form);
+  outline-offset: 2px;
+}
+
+/* The one decorative element: answer status rendered as a rubber stamp. */
+.stamp {
+  display: inline-block;
+  padding: 0.2rem 0.6rem;
+  border: 2px solid currentColor;
+  outline: 1px solid currentColor;
+  outline-offset: 2px;
+  border-radius: 3px;
+  font-weight: 700;
+  font-size: 0.8125rem;
+  letter-spacing: 0.01em;
+  transform: rotate(-1.5deg);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .stamp-in {
+    animation: stamp-in 220ms cubic-bezier(0.2, 0.9, 0.3, 1.3);
+  }
+}
+
+@keyframes stamp-in {
+  from {
+    opacity: 0;
+    transform: rotate(-1.5deg) scale(1.25);
+  }
+  to {
+    opacity: 1;
+    transform: rotate(-1.5deg) scale(1);
+  }
+}
